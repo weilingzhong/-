@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Psychedelic Cat Particles</title>
+    
+    <!-- Tailwind CSS for UI Overlay -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Three.js (r128) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <!-- TensorFlow.js (Required for Handpose) -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    
+    <!-- MediaPipe Handpose -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/handpose"></script>
+
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050510; font-family: 'Courier New', Courier, monospace; }
+        #canvas-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        #video-source { display: none; transform: scaleX(-1); } /* Hidden video element */
+        
+        /* Custom glow effects for UI */
+        .neon-text {
+            text-shadow: 0 0 5px #ff00ff, 0 0 10px #ff00ff, 0 0 20px #ff00ff, 0 0 40px #00ffff;
+        }
+        .neon-box {
+            box-shadow: 0 0 10px #00ffff, inset 0 0 10px #00ffff;
+        }
+        
+        /* Loader Animation */
+        .loader {
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            border-left-color: #ff00ff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Audio Bars Visualization */
+        .audio-bar {
+            width: 4px;
+            background-color: #00ffff;
+            height: 2px;
+            transition: height 0.1s;
+        }
+        
+        /* Voice Active Pulse */
+        .voice-pulse {
+            animation: voicePulse 1.5s infinite;
+        }
+        @keyframes voicePulse {
+            0% { box-shadow: 0 0 0 0 rgba(0, 255, 255, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(0, 255, 255, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(0, 255, 255, 0); }
+        }
+    </style>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body class="text-white selection:bg-pink-500 selection:text-white">
+
+    <!-- WebGL Canvas -->
+    <div id="canvas-container"></div>
+
+    <!-- Hidden Video Element for MediaPipe -->
+    <video id="video-source" playsinline></video>
+
+    <!-- UI Overlay -->
+    <div id="ui-layer" class="absolute inset-0 z-50 pointer-events-none flex flex-col justify-between p-6">
+        
+        <!-- Header -->
+        <div class="flex justify-between items-start">
+            <div class="bg-black/50 backdrop-blur-md p-4 rounded-lg border border-pink-500/30 neon-box pointer-events-auto">
+                <h1 class="text-2xl font-bold mb-1 bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-pink-500 neon-text">
+                    NEO-CAT
+                </h1>
+                <p class="text-xs text-cyan-200 opacity-80">AUDIO & GESTURE SYSTEM // v3.2</p>
+                <div id="voice-status" class="hidden mt-2 flex items-center gap-2">
+                    <div class="w-2 h-2 bg-green-400 rounded-full voice-pulse"></div>
+                    <span class="text-[10px] text-green-300">LISTENING FOR "XIAO LAN"</span>
+                </div>
+            </div>
+            
+            <div class="flex flex-col items-end gap-2">
+                <div id="status-indicator" class="flex items-center gap-2 bg-black/50 backdrop-blur-md px-3 py-1 rounded-full border border-cyan-500/30">
+                    <div id="status-dot" class="w-2 h-2 rounded-full bg-red-500"></div>
+                    <span id="status-text" class="text-xs font-mono text-cyan-400">OFFLINE</span>
+                </div>
+                <!-- Mini Audio Visualizer -->
+                <div id="audio-viz" class="hidden flex items-end gap-1 h-8 bg-black/50 p-1 rounded border border-purple-500/30">
+                    <div class="audio-bar h-2"></div><div class="audio-bar h-4"></div><div class="audio-bar h-3"></div>
+                    <div class="audio-bar h-5"></div><div class="audio-bar h-2"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Instructions / Controls -->
+        <div class="flex justify-between items-end">
+            <div class="space-y-2 pointer-events-auto max-w-md w-full">
+                 <!-- Loading Screen / Start Button -->
+                <div id="start-screen" class="bg-black/80 backdrop-blur-lg p-6 rounded-xl border border-pink-500 shadow-2xl transition-all duration-500">
+                    <h2 class="text-xl text-pink-400 mb-4 font-bold">INITIALIZE SYSTEM</h2>
+                    
+                    <!-- Mode Selection -->
+                    <div class="grid grid-cols-2 gap-3 mb-6">
+                        <button id="mode-camera" class="p-4 rounded border border-cyan-500/50 hover:bg-cyan-900/40 hover:border-cyan-400 transition text-left group active-mode">
+                            <div class="text-cyan-400 font-bold mb-1 group-hover:neon-text">📸 CAMERA MODE</div>
+                            <div class="text-xs text-gray-400">Gesture Control (Scale & Light)</div>
+                        </button>
+                        <button id="mode-audio" class="p-4 rounded border border-pink-500/50 hover:bg-pink-900/40 hover:border-pink-400 transition text-left group">
+                            <div class="text-pink-400 font-bold mb-1 group-hover:neon-text">🎵 AUDIO MODE</div>
+                            <div class="text-xs text-gray-400">Rhythm Control (Scale)</div>
+                        </button>
+                    </div>
+
+                    <!-- Audio Controls (Hidden by default) -->
+                    <div id="audio-controls" class="hidden mb-6 space-y-3">
+                        <p class="text-xs text-pink-300 mb-2">SELECT AUDIO SOURCE:</p>
+                        <div class="flex gap-2">
+                            <button id="btn-mic" class="flex-1 py-2 px-3 bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded text-xs font-mono transition">🎤 MICROPHONE</button>
+                            <label class="flex-1 py-2 px-3 bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded text-xs font-mono transition cursor-pointer text-center">
+                                📂 UPLOAD MP3/WAV
+                                <input type="file" id="file-upload" accept="audio/*" class="hidden">
+                            </label>
+                        </div>
+                    </div>
+
+                    <div id="loading-spinner" class="hidden flex items-center gap-3 mb-4">
+                        <div class="loader"></div>
+                        <span class="text-sm text-pink-300 animate-pulse">Loading AI Models...</span>
+                    </div>
+
+                    <div id="error-msg" class="hidden mb-4 p-3 bg-red-900/50 border border-red-500 rounded text-red-200 text-xs"></div>
+
+                    <button id="start-btn" class="group relative px-6 py-3 bg-cyan-900/50 hover:bg-cyan-800 text-cyan-100 font-bold rounded border border-cyan-500 transition-all duration-200 w-full overflow-hidden">
+                        <span class="relative z-10 group-hover:text-white transition-colors">START EXPERIENCE</span>
+                        <div class="absolute inset-0 bg-cyan-500/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
+                    </button>
+                    
+                    <!-- Fallback Controls -->
+                    <div id="fallback-controls" class="hidden mt-4 pt-4 border-t border-gray-700">
+                         <div class="flex gap-2">
+                            <button id="emotion-happy-btn" class="flex-1 px-3 py-2 bg-green-900/30 border border-green-500/50 text-xs hover:bg-green-800/50 rounded transition">HAPPY</button>
+                            <button id="emotion-sad-btn" class="flex-1 px-3 py-2 bg-blue-900/30 border border-blue-500/50 text-xs hover:bg-blue-800/50 rounded transition">SAD</button>
+                            <button id="btn-trigger-meow" class="flex-1 px-3 py-2 bg-yellow-900/30 border border-yellow-500/50 text-xs hover:bg-yellow-800/50 rounded transition">CALL "XIAO LAN"</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Debug Info -->
+            <div class="text-right pointer-events-none opacity-50 bg-black/40 p-2 rounded">
+                <div class="text-[10px] text-pink-500 font-mono" id="debug-mode">MODE: IDLE</div>
+                <div class="text-[10px] text-yellow-500 font-mono" id="debug-val">VAL: 0</div>
+                <div class="text-[10px] text-cyan-500 font-mono" id="debug-fps">FPS: 0</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        /**
+         * APPLICATION STATE & CONFIGURATION
+         */
+        const state = {
+            isRunning: false,
+            isModelLoaded: false,
+            handDetected: false,
+            audioActive: false,
+            speechError: false,
+            
+            // Interaction State
+            scale: 1.0,
+            lightsOn: true,
+            
+            // Emotion State (0 to 1)
+            emotionWeights: { happy: 0, sad: 0 },
+            targetEmotion: { happy: 0, sad: 0 },
+            
+            // Smoothing targets
+            targetScale: 1.0,
+            
+            // Audio Data
+            audioEnergy: 0,
+            
+            // Visual config
+            colors: {
+                base: new THREE.Color(0x00aaff), // Cyan
+                active: new THREE.Color(0xff00ff), // Pink
+                dim: new THREE.Color(0x111122),    // Dark Blue
+                faceNeutral: new THREE.Color(0xffffff),
+                faceHappy: new THREE.Color(0xffd700), // Gold
+                faceSad: new THREE.Color(0x4444ff)    // Blue
+            }
+        };
+
+        /**
+         * AUDIO SYSTEM (Web Audio API)
+         */
+        let audioContext, analyser, dataArray, source;
+        
+        function initAudio() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+            }
+            if (audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
+        }
+
+        /**
+         * SYNTHETIC MEOW SOUND GENERATOR
+         * Creates a dynamic sound using oscillators without external files
+         */
+        function playMeow() {
+            if (!audioContext) initAudio();
+            if (audioContext.state === 'suspended') audioContext.resume();
+
+            const t = audioContext.currentTime;
+            
+            // Oscillator for the "Voice"
+            const osc = audioContext.createOscillator();
+            const gain = audioContext.createGain();
+            const filter = audioContext.createBiquadFilter();
+
+            osc.type = 'triangle'; // Softer than square, richer than sine
+            
+            // Pitch Envelope: Rise then Fall (Me-ow)
+            // Start mid-high, go higher, then drop low
+            osc.frequency.setValueAtTime(400, t);
+            osc.frequency.linearRampToValueAtTime(900, t + 0.15); // "Me..."
+            osc.frequency.exponentialRampToValueAtTime(350, t + 0.5); // "...ow"
+
+            // Volume Envelope
+            gain.gain.setValueAtTime(0, t);
+            gain.gain.linearRampToValueAtTime(0.2, t + 0.05); // Attack
+            gain.gain.exponentialRampToValueAtTime(0.01, t + 0.5); // Release
+
+            // Filter to make it sound less "computer-y"
+            filter.type = 'lowpass';
+            filter.frequency.setValueAtTime(1500, t);
+
+            osc.connect(filter);
+            filter.connect(gain);
+            gain.connect(audioContext.destination);
+            
+            osc.start(t);
+            osc.stop(t + 0.6);
+        }
+
+        async function setupMicrophone() {
+            initAudio();
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                if (source) source.disconnect();
+                source = audioContext.createMediaStreamSource(stream);
+                source.connect(analyser);
+                state.audioActive = true;
+                updateStatus("MIC ACTIVE", "text-pink-400", "bg-pink-500");
+                document.getElementById('audio-viz').classList.remove('hidden');
+            } catch (err) {
+                console.error("Mic Error:", err);
+                alert("Microphone access denied.");
+            }
+        }
+
+        function handleFileUpload(event) {
+            initAudio();
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                audioContext.decodeAudioData(e.target.result, function(buffer) {
+                    if (source) source.disconnect(); // Disconnect prev source
+                    source = audioContext.createBufferSource();
+                    source.buffer = buffer;
+                    source.loop = true;
+                    source.connect(analyser);
+                    source.connect(audioContext.destination); // Play to speakers
+                    source.start(0);
+                    state.audioActive = true;
+                    updateStatus("MUSIC PLAYING", "text-pink-400", "bg-pink-500");
+                    document.getElementById('audio-viz').classList.remove('hidden');
+                });
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function updateAudioData() {
+            if (!state.audioActive || !analyser) return 0;
+            
+            analyser.getByteFrequencyData(dataArray);
+            
+            // Calculate Bass Energy (Low Frequencies)
+            // Use bins 0-10 roughly covers sub-bass to low-mids for fftSize 256
+            let sum = 0;
+            const binCount = 10; 
+            for (let i = 0; i < binCount; i++) {
+                sum += dataArray[i];
+            }
+            const average = sum / binCount;
+            
+            // Visualizer update (simple random shimmy based on volume for demo)
+            const bars = document.querySelectorAll('.audio-bar');
+            bars.forEach((bar, i) => {
+                const h = dataArray[i * 2] / 255 * 30; // Scale height
+                bar.style.height = `${Math.max(4, h)}px`;
+            });
+
+            // Normalize 0-255 to 0.0-1.0
+            return average / 255;
+        }
+
+        /**
+         * VOICE RECOGNITION (Command: "Xiao Lan")
+         */
+        let recognition;
+        function initSpeech() {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                console.log("Speech API not supported");
+                return;
+            }
+
+            recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = false;
+            recognition.lang = 'zh-CN'; // Listen for Chinese
+
+            recognition.onstart = () => {
+                document.getElementById('voice-status').classList.remove('hidden');
+                state.speechError = false;
+            };
+
+            recognition.onresult = (event) => {
+                const last = event.results.length - 1;
+                const transcript = event.results[last][0].transcript.trim().toLowerCase();
+                console.log("Heard:", transcript);
+
+                // Check for keywords
+                if (transcript.includes('小蓝') || transcript.includes('小兰') || transcript.includes('蓝') || transcript.includes('xiao lan')) {
+                    triggerVoiceReaction();
+                }
+            };
+
+            recognition.onerror = (e) => {
+                console.log('Speech error:', e.error);
+                if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+                    state.speechError = true;
+                    updateStatus("MIC BLOCKED", "text-red-400", "bg-red-500");
+                }
+            };
+            
+            // Auto restart
+            recognition.onend = () => {
+                if (state.isRunning && !state.speechError) {
+                    setTimeout(() => {
+                        try { recognition.start(); } catch(e){}
+                    }, 500);
+                }
+            };
+
+            try {
+                recognition.start();
+            } catch(e) { console.log(e); }
+        }
+
+        function triggerVoiceReaction() {
+            // 1. Play Sound
+            playMeow();
+            
+            // 2. Visual Reaction
+            state.targetEmotion.happy = 1.0;
+            const originalColor = state.colors.active.getHex();
+            
+            // Flash Orange/Gold
+            state.colors.active.setHex(0xffaa00); 
+            
+            // Reset after 2 seconds
+            setTimeout(() => {
+                if (!state.handDetected) {
+                     state.targetEmotion.happy = 0;
+                }
+                state.colors.active.setHex(originalColor); // Back to Pink
+            }, 2000);
+        }
+
+
+        /**
+         * THREE.JS SETUP
+         */
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050510, 0.03);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 4;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+        // Particle System
+        let particleSystem;
+        let particlesGeometry;
+        let particlesMaterial;
+
+        // Particle Types
+        const TYPE_BODY = 0;
+        const TYPE_MOUTH = 1;
+        const TYPE_EYE = 2;
+        const TYPE_TEAR = 3;
+        const TYPE_EAR = 4;
+        const TYPE_WHISKER = 5;
+
+        function initParticles() {
+            particlesGeometry = new THREE.BufferGeometry();
+            const positions = [];
+            const colors = [];
+            const sizes = [];
+            const originalPositions = []; 
+            const types = []; 
+            const metas = [];
+
+            const color1 = new THREE.Color(0x00ffff);
+            const color2 = new THREE.Color(0xff00ff);
+
+            // 1. Generate Body
+            for (let i = 0; i < 2500; i++) {
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos((Math.random() * 2) - 1);
+                const radius = 1.3 + (Math.random() * 0.1);
+                
+                const x = radius * Math.sin(phi) * Math.cos(theta);
+                const y = radius * Math.sin(phi) * Math.sin(theta) * 0.85; 
+                const z = radius * Math.cos(phi) * 0.9;
+
+                positions.push(x, y, z);
+                originalPositions.push(x, y, z);
+                colors.push(color1.r, color1.g, color1.b);
+                sizes.push(1.0);
+                types.push(TYPE_BODY);
+                metas.push(0);
+            }
+
+            // 2. Ears
+            for (let i = 0; i < 600; i++) {
+                const side = i % 2 === 0 ? 1 : -1;
+                const u = Math.random();
+                const v = Math.random();
+                if (u + v > 1) continue;
+
+                const bx = 0.6 * side; const by = 0.8; const bz = 0.2;
+                const h = 0.8 * u; const w = 0.4 * v * (1-u);
+                const angle = (Math.random() - 0.5) * 2;
+                
+                let lx = w * Math.cos(angle); let lz = w * Math.sin(angle);
+                let x = bx + lx; let y = by + h; let z = bz + lz;
+
+                const tilt = -0.3 * side;
+                const nx = x * Math.cos(tilt) - y * Math.sin(tilt);
+                const ny = x * Math.sin(tilt) + y * Math.cos(tilt);
+                x = nx; y = ny;
+
+                positions.push(x, y, z);
+                originalPositions.push(x, y, z);
+                colors.push(color2.r, color2.g, color2.b);
+                sizes.push(1.0);
+                types.push(TYPE_EAR);
+                metas.push(side);
+            }
+
+            // 3. Whiskers
+            for (let i = 0; i < 150; i++) {
+                const side = i % 2 === 0 ? 1 : -1;
+                const whiskerIdx = Math.floor(i / 10) % 3;
+                const t = (i % 10) / 10;
+
+                const ox = 0.5 * side; const oy = -0.1 + (whiskerIdx * 0.1); const oz = 1.0;
+                const len = 0.8; const angle = (side * 0.2) + (whiskerIdx * 0.1 * side);
+                
+                let x = ox + (len * t * Math.cos(angle) * side * 2.5);
+                let y = oy - (len * t * 0.2); let z = oz + (len * t * -0.5);
+
+                positions.push(x, y, z);
+                originalPositions.push(x, y, z);
+                colors.push(1, 1, 1);
+                types.push(TYPE_WHISKER);
+                metas.push(side);
+            }
+
+            // 4. Features
+            // Mouth
+            for (let i = 0; i < 80; i++) {
+                const t = i / 79;
+                const x = THREE.MathUtils.lerp(-0.3, 0.3, t);
+                const y = -0.45; const z = 1.15;
+                positions.push(x, y, z); originalPositions.push(x, y, z);
+                colors.push(1, 1, 1); types.push(TYPE_MOUTH); metas.push(0);
+            }
+            // Eyes
+            for (let i = 0; i < 100; i++) {
+                const side = i < 50 ? -1 : 1;
+                const t = (i % 50) / 49;
+                const x = (side * 0.4) + (t - 0.5) * 0.3; 
+                const y = 0.2; const z = 1.12;
+                positions.push(x, y, z); originalPositions.push(x, y, z);
+                colors.push(1, 1, 1); types.push(TYPE_EYE); metas.push(side);
+            }
+            // Tears
+            for (let i = 0; i < 50; i++) {
+                const side = i % 2 === 0 ? -1 : 1;
+                const x = side * 0.4; const y = 0.1; const z = 1.2;
+                positions.push(x, y, z); originalPositions.push(x, y, z);
+                colors.push(0, 0, 0); types.push(TYPE_TEAR); metas.push(i);
+            }
+
+            particlesGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            particlesGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+            particlesGeometry.userData = { originalPositions: originalPositions, types: types, metas: metas };
+
+            const sprite = getSprite(); 
+            particlesMaterial = new THREE.PointsMaterial({
+                size: 0.15,
+                map: sprite,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.9,
+                depthWrite: false,
+                blending: THREE.AdditiveBlending
+            });
+
+            particleSystem = new THREE.Points(particlesGeometry, particlesMaterial);
+            scene.add(particleSystem);
+        }
+
+        function getSprite() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 32; canvas.height = 32;
+            const context = canvas.getContext('2d');
+            const gradient = context.createRadialGradient(16, 16, 0, 16, 16, 16);
+            gradient.addColorStop(0, 'rgba(255,255,255,1)');
+            gradient.addColorStop(0.2, 'rgba(255,255,255,0.8)');
+            gradient.addColorStop(0.5, 'rgba(255,255,255,0.2)');
+            gradient.addColorStop(1, 'rgba(0,0,0,0)');
+            context.fillStyle = gradient;
+            context.fillRect(0, 0, 32, 32);
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        initParticles();
+
+        /**
+         * ANIMATION LOOP
+         */
+        let time = 0;
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            time += delta;
+
+            document.getElementById('debug-fps').innerText = `FPS: ${Math.round(1/delta)}`;
+
+            // --- AUDIO REACTIVITY LOGIC ---
+            if (state.audioActive) {
+                const energy = updateAudioData();
+                state.audioEnergy = energy;
+                // Map energy (0.0 - 1.0) to Scale (0.5 - 1.5)
+                // Using 50% - 150% range as requested
+                const audioScale = 0.5 + (energy * 1.5); // 0 -> 0.5, 1 -> 2.0 (clamped logic below)
+                // Clamp target
+                const clampedTarget = Math.min(1.5, Math.max(0.5, audioScale));
+                state.targetScale = clampedTarget;
+                
+                // Beat flash effect
+                if (energy > 0.6) state.lightsOn = true;
+            }
+
+            if (particleSystem) {
+                // Smooth Transition (approx 300ms smoothing)
+                // Lerp factor 0.1 at 60fps is ~150ms half-life. 
+                // Using 5.0 * delta makes it independent of framerate.
+                // 300ms means we want to close the gap significantly. 
+                state.scale = THREE.MathUtils.lerp(state.scale, state.targetScale, 5.0 * delta);
+
+                // Emotion Smoothing
+                state.emotionWeights.happy = THREE.MathUtils.lerp(state.emotionWeights.happy, state.targetEmotion.happy, 5.0 * delta);
+                state.emotionWeights.sad = THREE.MathUtils.lerp(state.emotionWeights.sad, state.targetEmotion.sad, 5.0 * delta);
+
+                particleSystem.scale.setScalar(state.scale);
+                document.getElementById('debug-val').innerText = `SCALE: ${state.scale.toFixed(2)}`;
+                
+                // Idle Sway
+                particleSystem.rotation.y = Math.sin(time * 0.5) * 0.1; 
+                particleSystem.rotation.z = Math.cos(time * 0.4) * 0.05;
+
+                const positions = particlesGeometry.attributes.position.array;
+                const colors = particlesGeometry.attributes.color.array;
+                const orig = particlesGeometry.userData.originalPositions;
+                const types = particlesGeometry.userData.types;
+                const metas = particlesGeometry.userData.metas;
+
+                const targetColor = state.lightsOn ? state.colors.active : state.colors.dim;
+                const secondaryColor = state.lightsOn ? state.colors.base : state.colors.dim;
+                
+                let faceColor = state.colors.faceNeutral;
+                if (state.emotionWeights.happy > 0.5) faceColor = state.colors.faceHappy;
+                if (state.emotionWeights.sad > 0.5) faceColor = state.colors.faceSad;
+
+                for (let i = 0; i < positions.length / 3; i++) {
+                    const i3 = i * 3;
+                    const type = types[i];
+                    const meta = metas[i];
+
+                    const ox = orig[i3]; const oy = orig[i3+1]; const oz = orig[i3+2];
+
+                    // 1. BODY
+                    if (type === TYPE_BODY) {
+                        const noise = Math.sin(time * 2 + ox * 5) * 0.015;
+                        positions[i3] = ox + noise;
+                        positions[i3+1] = oy + noise;
+                        positions[i3+2] = oz + noise;
+
+                        const isEven = i % 2 === 0;
+                        const cTarget = isEven ? targetColor : secondaryColor;
+                        colors[i3] = THREE.MathUtils.lerp(colors[i3], cTarget.r, 0.05);
+                        colors[i3+1] = THREE.MathUtils.lerp(colors[i3+1], cTarget.g, 0.05);
+                        colors[i3+2] = THREE.MathUtils.lerp(colors[i3+2], cTarget.b, 0.05);
+                    }
+                    
+                    // 2. MOUTH
+                    else if (type === TYPE_MOUTH) {
+                        const bend = (state.emotionWeights.happy * 0.5) - (state.emotionWeights.sad * 0.4);
+                        const distFromCenter = Math.abs(ox); 
+                        const curveY = (distFromCenter * distFromCenter * 5.0) * bend;
+                        
+                        positions[i3] = ox; positions[i3+1] = oy + curveY; positions[i3+2] = oz;
+
+                        colors[i3] = THREE.MathUtils.lerp(colors[i3], faceColor.r, 0.1);
+                        colors[i3+1] = THREE.MathUtils.lerp(colors[i3+1], faceColor.g, 0.1);
+                        colors[i3+2] = THREE.MathUtils.lerp(colors[i3+2], faceColor.b, 0.1);
+                    }
+
+                    // 3. EYES
+                    else if (type === TYPE_EYE) {
+                        const side = meta;
+                        const sadY = -0.05 * state.emotionWeights.sad;
+                        const happyY = (state.emotionWeights.happy * 0.05);
+                        const blink = (Math.sin(time * 4) > 0.95 && state.emotionWeights.sad < 0.2) ? 0.1 : 1;
+
+                        positions[i3] = ox;
+                        positions[i3+1] = (oy + happyY + sadY) * blink; 
+                        positions[i3+2] = oz;
+                        
+                        colors[i3] = THREE.MathUtils.lerp(colors[i3], faceColor.r, 0.1);
+                        colors[i3+1] = THREE.MathUtils.lerp(colors[i3+1], faceColor.g, 0.1);
+                        colors[i3+2] = THREE.MathUtils.lerp(colors[i3+2], faceColor.b, 0.1);
+                    }
+
+                    // 4. EARS
+                    else if (type === TYPE_EAR) {
+                        const side = meta;
+                        const twitch = state.emotionWeights.happy * Math.sin(time * 20) * 0.02;
+                        
+                        const px = 0.6 * side; const py = 0.8;
+                        const angle = state.emotionWeights.sad * 1.0 * side; 
+
+                        const dx = ox - px; const dy = oy - py;
+                        const rx = dx * Math.cos(angle) - dy * Math.sin(angle);
+                        const ry = dx * Math.sin(angle) + dy * Math.cos(angle);
+
+                        positions[i3] = px + rx; positions[i3+1] = py + ry + twitch; positions[i3+2] = oz;
+
+                        colors[i3] = THREE.MathUtils.lerp(colors[i3], targetColor.r, 0.1);
+                        colors[i3+1] = THREE.MathUtils.lerp(colors[i3+1], targetColor.g, 0.1);
+                        colors[i3+2] = THREE.MathUtils.lerp(colors[i3+2], targetColor.b, 0.1);
+                    }
+
+                    // 5. WHISKERS
+                    else if (type === TYPE_WHISKER) {
+                        const moodY = (state.emotionWeights.happy * 0.2) - (state.emotionWeights.sad * 0.2);
+                        const t = (Math.abs(ox) - 0.5); 
+                        positions[i3] = ox; positions[i3+1] = oy + (t * moodY); positions[i3+2] = oz;
+                    }
+
+                    // 6. TEARS
+                    else if (type === TYPE_TEAR) {
+                        if (state.emotionWeights.sad > 0.3) {
+                            const speed = 0.8; const offset = meta * 123.45;
+                            const tCycle = (time * speed + offset) % 2.5;
+                            
+                            positions[i3] = ox;
+                            positions[i3+1] = oy - (tCycle * tCycle * 0.8);
+                            positions[i3+2] = oz + (tCycle * 0.1);
+                            
+                            const alpha = Math.max(0, 1.0 - (tCycle / 2.0));
+                            colors[i3] = 0.3 * alpha; colors[i3+1] = 0.3 * alpha; colors[i3+2] = 1.0 * alpha;
+                        } else {
+                            colors[i3] = 0; colors[i3+1] = 0; colors[i3+2] = 0;
+                        }
+                    }
+                }
+                
+                particlesGeometry.attributes.position.needsUpdate = true;
+                particlesGeometry.attributes.color.needsUpdate = true;
+                particlesMaterial.size = state.lightsOn ? 0.15 : 0.08;
+            }
+
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+
+        /**
+         * CONTROLS & LOGIC
+         */
+        const video = document.getElementById('video-source');
+        const startBtn = document.getElementById('start-btn');
+        const spinner = document.getElementById('loading-spinner');
+        const errorMsg = document.getElementById('error-msg');
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+        
+        // Mode Selection
+        let currentMode = 'camera'; // 'camera' or 'audio'
+
+        document.getElementById('mode-camera').addEventListener('click', () => {
+            currentMode = 'camera';
+            document.getElementById('audio-controls').classList.add('hidden');
+            document.getElementById('mode-camera').classList.add('border-cyan-400', 'bg-cyan-900/40');
+            document.getElementById('mode-audio').classList.remove('border-pink-400', 'bg-pink-900/40');
+            state.audioActive = false;
+        });
+
+        document.getElementById('mode-audio').addEventListener('click', () => {
+            currentMode = 'audio';
+            document.getElementById('audio-controls').classList.remove('hidden');
+            document.getElementById('mode-audio').classList.add('border-pink-400', 'bg-pink-900/40');
+            document.getElementById('mode-camera').classList.remove('border-cyan-400', 'bg-cyan-900/40');
+        });
+
+        // Audio Input Listeners
+        document.getElementById('btn-mic').addEventListener('click', setupMicrophone);
+        document.getElementById('file-upload').addEventListener('change', handleFileUpload);
+        document.getElementById('btn-trigger-meow').addEventListener('click', triggerVoiceReaction);
+
+        let handposeModel = null;
+
+        function updateStatus(text, colorClass, dotClass) {
+            statusText.innerText = text;
+            statusText.className = `text-xs font-mono ${colorClass}`;
+            statusDot.className = `w-2 h-2 rounded-full ${dotClass} animate-pulse`;
+        }
+
+        async function setupCamera() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                throw new Error('Camera API unavailable');
+            }
+            const stream = await navigator.mediaDevices.getUserMedia({
+                'audio': false,
+                'video': { facingMode: 'user', width: 640, height: 480 }
+            });
+            video.srcObject = stream;
+            return new Promise((resolve) => video.onloadedmetadata = () => resolve(video));
+        }
+
+        async function loadHandpose() {
+            handposeModel = await handpose.load();
+        }
+
+        async function main() {
+            try {
+                // Initialize Audio Context on user gesture
+                initAudio();
+                
+                // Start Speech Recognition
+                initSpeech();
+
+                startBtn.style.display = 'none';
+                spinner.style.display = 'flex';
+                
+                if (currentMode === 'camera') {
+                    await setupCamera();
+                    video.play();
+                    await loadHandpose();
+                    state.isModelLoaded = true;
+                    state.isRunning = true;
+                    updateStatus("GESTURE ACTIVE", "text-cyan-400", "bg-green-500");
+                    detectHands();
+                } else {
+                    // Audio mode doesn't strictly require camera, but we might want it for bg
+                    updateStatus("AUDIO READY", "text-pink-400", "bg-purple-500");
+                }
+                
+                document.getElementById('start-screen').style.opacity = '0';
+                setTimeout(() => document.getElementById('start-screen').style.display = 'none', 500);
+                
+                document.getElementById('debug-mode').innerText = `MODE: ${currentMode.toUpperCase()}`;
+
+            } catch (e) {
+                console.error(e);
+                spinner.style.display = 'none';
+                errorMsg.innerText = `Error: ${e.message}`;
+                errorMsg.style.display = 'block';
+                document.getElementById('fallback-controls').classList.remove('hidden');
+                
+                // Fallback listeners
+                document.getElementById('emotion-happy-btn').addEventListener('click', () => {
+                    state.targetEmotion.happy = 1; state.targetEmotion.sad = 0;
+                });
+                document.getElementById('emotion-sad-btn').addEventListener('click', () => {
+                    state.targetEmotion.happy = 0; state.targetEmotion.sad = 1;
+                });
+            }
+        }
+
+        function getDist(p1, p2) {
+            return Math.sqrt(Math.pow(p1[0]-p2[0], 2) + Math.pow(p1[1]-p2[1], 2) + Math.pow(p1[2]-p2[2], 2));
+        }
+
+        async function detectHands() {
+            if (!state.isRunning) return;
+
+            const predictions = await handposeModel.estimateHands(video);
+
+            if (predictions.length > 0) {
+                state.handDetected = true;
+                const hand = predictions[0];
+                const lm = hand.landmarks;
+
+                // 1. Scale Control (Only if Audio not active)
+                if (!state.audioActive) {
+                    const wristY = lm[0][1];
+                    const videoHeight = video.videoHeight || 480;
+                    const normY = Math.max(0, Math.min(1, wristY / videoHeight));
+                    state.targetScale = 2.5 - (normY * 2.0);
+                }
+
+                // 2. Gesture Logic
+                const wrist = lm[0];
+                function isFingerExtended(tipIdx, pipIdx) {
+                    return getDist(lm[tipIdx], wrist) > getDist(lm[pipIdx], wrist);
+                }
+
+                const idxExt = isFingerExtended(8, 6);
+                const midExt = isFingerExtended(12, 10);
+                const ringExt = isFingerExtended(16, 14);
+                const pinkyExt = isFingerExtended(20, 18);
+
+                const isVictory = idxExt && midExt && !ringExt && !pinkyExt;
+                
+                const thumbTip = lm[4];
+                const indexTip = lm[8];
+                const pinchDist = getDist(thumbTip, indexTip);
+                const isPinch = pinchDist < 60;
+                const isOk = isPinch && midExt && ringExt && pinkyExt;
+
+                // Fist Logic - only controls lights if audio isn't dominating high energy
+                const isFist = !idxExt && !midExt && !ringExt && !pinkyExt;
+                if (!state.audioActive) {
+                    if (isFist) state.lightsOn = false;
+                    else state.lightsOn = true;
+                }
+
+                // Emotion Logic
+                if (isVictory) {
+                    state.targetEmotion.happy = 1; state.targetEmotion.sad = 0;
+                } else if (isOk) {
+                    state.targetEmotion.happy = 0; state.targetEmotion.sad = 1;
+                } else {
+                    state.targetEmotion.happy = 0; state.targetEmotion.sad = 0;
+                }
+
+            } else {
+                state.handDetected = false;
+            }
+
+            requestAnimationFrame(detectHands);
+        }
+
+        startBtn.addEventListener('click', main);
+
+    </script>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>

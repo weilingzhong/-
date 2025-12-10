@@ -1,0 +1,7 @@
+{
+  "name": "Psychedelic Cat Particles",
+  "description": "A gesture-controlled 3D particle visualization of a cat head. Use hand gestures to control lighting and size.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
